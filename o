@@ -1,0 +1,409 @@
+/***
+ * @Name Bizcloud:ADRelease:Test
+ * @Type Script
+ * @Description Minion based tests to verify the AD and DNS release functionality works correctly in the cloud plugin. 
+ *
+ */
+
+/*
+	Minion allows access to Agility assets (objects) and
+	other Java code through a Javascript interface.
+
+	The project is described at the following URL:
+
+	http://servicemesh.github.io/minion/jsdoc/
+
+	Minion is an OsgiCommandSupport object which is packaged in a OSGI bundle. 
+	This means that minion can be started from the karaf shell and has access to
+	resources (classes) from other bundles via configuration.
+
+	The purpose of this file is to provide a test to see if the release of an instance
+	results in the release of its DNS and Active Directory (AD) records.  The test
+	creates and deploys a blueprint and then stops and releases the resultant topology.
+	A test is made to ensure the DNS and AD records are not deleted at stop but only
+	after release of the topology.
+
+	The other purpose of this file is to demonstrate features of Minion and also to
+	show how Agility works at a high level.  There will be future tutorials which 
+	go deeper into both products.	
+*/
+
+importScript("Minion");
+
+
+/**** FIND AGILITY ASSET METHODS ******/
+
+function findBlueprintIdByName(name)
+{
+	//This uses GSON (https://github.com/google/gson) under the covers
+        var blueprintArray = minion.$('$..blueprints[?(@.name==\"' + blueprintName + '\")]');
+	if (blueprintArray && blueprintArray.length > 0) {
+		return blueprintArray[0];
+	}
+	return null;
+}
+
+
+function findStackHeadVersionByName(stackName)
+{
+	//Under the covers this is using GSON under the covers
+	// (https://github.com/google/gson)
+        var stackArray = minion.$('$..stacks[?(@.name==\"' + stackName + '\")]');
+
+	//there could be many stacks with this name we only need one of them 
+	//as we are going to find the stack which is the head (most current) version
+	if (stackArray && stackArray.length > 0) {
+
+		//This returns the head version of this stack
+		/*
+			if you look at the minion.js file you will see a
+			function of the form
+
+			head : {
+				get : function {
+
+			This method get all the versions of the underlying asset (delegate)
+			that minion is wrapping and calls its getAllVersion method and 
+			iterates through these "stacks in our case" to find the one 
+			with version attribute equal to 0.
+
+			The IVersion interface is implemented by the delegate 
+			underlying agility assset implementation which in our case is a 
+
+			com.servicemesh.agility.internal.api.service.StackImpl
+		*/	
+		return stackArray[0].head;	
+
+	}
+        return null;
+}
+
+function findProjectByName(projectName)
+{
+        var projs = minion.projects;
+
+	//We could use the GSON syntax to find this project
+	//
+	//for example, 
+	//minion.$('$..projects[?(@.name=="BZ4")]')
+	//
+        for (var a = 0; a < projs.length; a++) {
+                if (projs[a].name == projectName) {
+			return projs[a];
+                }
+        }
+
+	//we should log that the project was not found
+        return null;
+}
+
+function findProjectIdByName(projectName)
+{
+        var proj = findProjectByName(projectName);
+        if (proj) { 
+		return proj.id; 
+	} else { 
+		return null; 
+	}
+}
+
+/*
+
+	This method creates blueprint with a single workload
+	in the indicated project.  
+
+	To do this it finds the stack (head version) by the passed
+	in name stackName and then creates a workload object which
+	contains this stack.
+
+	The variables and other assets (except for firewall rules)
+	that will apply to this workload and runtime template/instance 
+	will be inherited from the project container.
+
+*/
+function createBlueprintSingleWorkload(blueprintName, stackName, projectName)
+{
+  try
+  {
+        var proj = findProjectByName(projectName);
+        var stack = findStackHeadVersionByName(stackName);
+
+        if (valIsDefined(proj) && valIsDefined(stack)) {
+
+                //you have to create the blueprint first as it is the (design) container for the workload
+                var blueprint = new minion.object.Blueprint({name : blueprintName, parent : proj});
+                blueprint.save();
+
+                //create the workload indicating its base stack.  We also indicate that its parent is the
+		//blueprint we will be adding it to as an any order item (see next step)
+                var workload = new minion.object.Workload({name : stackName, baseStack:stack, parent : blueprint});
+                workload.save();
+
+                //add the workload to the blueprint as an any order item
+                var aoi = [workload];
+                blueprint.anyOrderItems = aoi;
+                //as the blueprint exists we do an update not a save
+                blueprint.update();
+		return;
+        }
+  }
+  catch(e) {
+
+  }
+}
+
+/*
+	This is very inefficient as we create and destroy the 
+	http client on each call.
+
+	Also this method should be driven by configuration instead of
+	hard coding the user id and password.
+*/
+function commonGetReturnResult(url, body)
+{
+  try
+  {
+	var AgilityUserAccount = "smadmin";
+	var AgilityUserPassword = "M3sh@dmin\!";
+
+	var request = {};
+        request.headers = {"Content-Type":"application/xml"};
+
+	if (!body) {
+        	request.body = "";
+	}
+	else {
+        	request.body = body;
+	}
+
+	var httpClient = minion.http.HttpClient({username:AgilityUserAccount, password:AgilityUserPassword});
+	var response = httpClient.httpGet(url, request);
+
+        minion.logger.info("response code: " + response.code);
+
+        if (response.code > 300) {
+                return null;
+        }
+        else {
+                return response.data; 
+        }
+  }
+  catch(e) {
+
+  }
+}
+
+function commonPostReturnResult(url, body)
+{
+  try
+  {
+	var AgilityUserAccount = "smadmin";
+	var AgilityUserPassword = "M3sh@dmin\!";
+
+	var request = {};
+        request.headers = {"Content-Type":"application/xml"};
+
+	if (!body) {
+        	request.body = "";
+	}
+	else {
+        	request.body = body;
+	}
+
+	var httpClient = minion.http.HttpClient({username:AgilityUserAccount, password:AgilityUserPassword});
+	var response = httpClient.httpPost(url, request);
+
+        minion.logger.info("response code: " + response.code);
+
+        if (response.code > 300) {
+                return null;
+        }
+        else {
+                return response.data; 
+        }
+  }
+  catch(e) {
+
+  }
+}
+
+
+function simpleWaitOnTask(taskId)
+{
+	//wait up to a min for the result
+	return waitForTaskForCompletion(taskId, 6, 10);
+}
+
+function waitForTaskForCompletion(taskId, pollingIntervalInSeconds, maxNumberOfIntervals)
+{
+	var url = "https://" + config.agilityserveripandport + "/agility/api/current/task/" + taskId;
+
+	while (currentIntervals < maxNumberOfIntervals) {
+
+	
+		var result = commonGetReturnResult(url);
+			
+		try {
+			Thread.currentThread().sleep(pollingIntervalInSeconds*1000);
+		}
+		catch(e) {
+
+		}
+
+	}
+}
+
+/*
+	This method deploys the blueprint which in our case
+	results in a topology that contains a template which 
+	contains a single instance.
+
+	The REST call to deploy a blueprint is a GET.
+
+	The GET call requires the id of the blueprint and the
+	id of the project into which the blueprint will be deployed.
+*/
+function deployBlueprint(blueprintName, projectName, hostName)
+{
+ 	var blueprintId = findBlueprintIdByName(blueprintName, projectName);
+        var projectId = findProjectIdByName(projectName);
+
+        var url = "https://localhost:8443/agility/api/current/blueprint/" + blueprintId + "/deploy/" + projectId;
+
+	//This execution is the same as clicking deploy in the GUI on the blueprint
+	var resultData = commonGetReturnResult(url);
+
+	var taskId = minion.xml.applyXPath(resultData,'//Task/id/text()');
+
+HERE
+	//This is the topology id of the topology that contains the template and instance 
+	//which resulted from the deployed blueprint (workload).	
+	var topologyId = minion.xml.applyXPath(resultData,'//Task/result/id/text()');
+
+	return topologyId;
+}
+
+/*
+
+	The rest calls to control Agility assets are in the AgilityRESTAPIguide.pdf
+
+	You can also find them by looking at the REST interface code for the asset.
+
+	For instance, for a topology the REST interface is defined in
+
+	com.servicemesh.agility.internal.api.Topologies
+
+	From this file we see the following paths for basic operations
+
+ 	@POST
+        @Path("{id}/start")
+
+	@POST
+        @Path("{id}/stop")
+
+	@POST
+        @Path("{id}/release")
+
+	Commands issued against the topology will also (save policy) apply
+	to its children (templates/instances).
+*/
+function startTopology(topologyId)
+{
+	var url = "https://localhost:8443/agility/api/current/topology/" + topologyId + "/start";
+	var resultData = commonGetReturnResult(url);
+	wa
+
+}
+
+
+function stopTopology(topologyId)
+{
+	var url = "https://localhost:8443/agility/api/current/topology/" + topologyId + "/stop";
+
+
+}
+
+
+function releaseTopology(topologyId)
+{
+	var url = "https://localhost:8443/agility/api/current/topology/" + topologyId + "/release";
+
+
+}
+
+
+/*
+	This method uses XML Minion objects and remote shell Minion objects
+	to determine if a particular dns record exists in an active directory
+	server.
+
+	XPath is leveraged here to pull data out of the return from the remote 
+	call.
+*/
+function dnsRecordExists(hostName)
+{
+	
+}
+
+
+client = new minion.remote.Client({publicKey: "agil_svc", privateKey: 'M3sh@dmin\!', type:"winrm", host: "10.92.2.254"});client.open();
+res1 = client.exec("powershell","Get-ADComputer testhost1");res1.stdout
+DistinguishedName
+
+res = client.exec("powershell", "Get-DnsServerResourceRecord -Name testhost1 -ZoneName tenant01.hcs.cscehub.com | select {$_.recorddata | select -expandproperty ipv4address}");res.stdout
+
+//look for number (should be the private IP)
+
+
+/*
+	This method uses XML Minion objects and remote shell Minion objects
+	to determine if a particular dns record exists in an active directory
+	server.
+
+	XPath is leveraged here to pull data out of the return from the remote 
+	call.
+*/
+function ADRecordExists(hostName)
+{
+
+}
+
+function dnsAndADRecordsExist()
+{
+	return dnsRecordExists(hostName) && ADRecordExists(hostName);
+}
+
+function dnsOrADRecordExists()
+{
+	return dnsRecordExists(hostName) || ADRecordExists(hostName);
+}
+
+function runTest()
+{
+	var blueprintName = "";
+	var stackName = "";
+	var projectName = "";
+	var hostName = "";
+
+	createBlueprintSingleWorkload(blueprintName, stackName, projectName);
+
+	var topologyId = deployBlueprint(blueprintName, projectName, hostName);
+
+	startTopology(topologyId);
+	if (!testRecordsExist()) {
+
+
+	}
+
+	stopTopology(topologyId);
+	if (!testRecordsExist()) {
+
+
+	}
+
+	releaseTopology(topologyId);
+	if (dnsOrADRecordExists()) {
+
+
+	}
+}
